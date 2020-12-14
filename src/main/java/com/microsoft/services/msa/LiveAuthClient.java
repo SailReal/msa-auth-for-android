@@ -25,9 +25,6 @@ package com.microsoft.services.msa;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
-import android.content.SharedPreferences;
-import android.content.SharedPreferences.Editor;
-import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.text.TextUtils;
@@ -37,11 +34,11 @@ import android.webkit.CookieSyncManager;
 
 import org.apache.http.client.HttpClient;
 import org.apache.http.impl.client.DefaultHttpClient;
+import org.cryptomator.util.crypto.CredentialCryptor;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -53,7 +50,7 @@ public class LiveAuthClient {
 
     private static final String TAG = "LiveAuthClient";
 
-    private static class AuthCompleteRunnable extends AuthListenerCaller implements Runnable {
+	private static class AuthCompleteRunnable extends AuthListenerCaller implements Runnable {
 
         private final LiveStatus status;
         private final LiveConnectSession session;
@@ -146,45 +143,6 @@ public class LiveAuthClient {
         }
     }
 
-    /** Observer that will, depending on the response, save or clear the refresh token. */
-    private class RefreshTokenWriter implements OAuthRequestObserver, OAuthResponseVisitor {
-
-        @Override
-        public void onException(LiveAuthException exception) { }
-
-        @Override
-        public void onResponse(OAuthResponse response) {
-            response.accept(this);
-        }
-
-        @Override
-        public void visit(OAuthErrorResponse response) {
-            if (response.getError() == OAuth.ErrorType.INVALID_GRANT) {
-                LiveAuthClient.this.clearRefreshTokenFromPreferences();
-            }
-        }
-
-        @Override
-        public void visit(OAuthSuccessfulResponse response) {
-            String refreshToken = response.getRefreshToken();
-            if (!TextUtils.isEmpty(refreshToken)) {
-                this.saveRefreshTokenToPreferences(refreshToken);
-            }
-        }
-
-        private boolean saveRefreshTokenToPreferences(String refreshToken) {
-            if (TextUtils.isEmpty(refreshToken)) throw new AssertionError();
-
-            SharedPreferences settings =
-                    applicationContext.getSharedPreferences(PreferencesConstants.FILE_NAME,
-                                                            Context.MODE_PRIVATE);
-            Editor editor = settings.edit();
-            editor.putString(PreferencesConstants.REFRESH_TOKEN_KEY, refreshToken);
-
-            return editor.commit();
-        }
-    }
-
     /**
      * An {@link OAuthResponseVisitor} that checks the {@link OAuthResponse} and if it is a
      * successful response, it loads the response into the given session.
@@ -267,7 +225,8 @@ public class LiveAuthClient {
     public LiveAuthClient(final Context context,
                           final String clientId,
                           final Iterable<String> scopes,
-                          final OAuthConfig oAuthConfig) {
+                          final OAuthConfig oAuthConfig,
+						  final String refreshToken) {
         LiveConnectUtils.assertNotNull(context, "context");
         LiveConnectUtils.assertNotNullOrEmpty(clientId, "clientId");
 
@@ -294,29 +253,26 @@ public class LiveAuthClient {
 
         this.baseScopes = Collections.unmodifiableSet(this.baseScopes);
 
-        final String refreshToken = this.getRefreshTokenFromPreferences();
         if (!TextUtils.isEmpty(refreshToken)) {
             final String scopeAsString = TextUtils.join(OAuth.SCOPE_DELIMITER, this.baseScopes);
+            String decryptedRefreshToken = decrypt(refreshToken);
+			session.setRefreshToken(decryptedRefreshToken);
             RefreshAccessTokenRequest request = new RefreshAccessTokenRequest(this.httpClient,
                                                                                  this.clientId,
-                                                                                 refreshToken,
+                                                                                 decryptedRefreshToken,
                                                                                  scopeAsString,
                                                                                  this.mOAuthConfig);
             TokenRequestAsync requestAsync = new TokenRequestAsync(request);
-            requestAsync.addObserver(new RefreshTokenWriter());
             requestAsync.execute();
         }
     }
 
-    public LiveAuthClient(final Context context, final String clientId) {
-        this(context, clientId, null);
-    }
-
-    public LiveAuthClient(final Context context,
-                          final String clientId,
-                          final Iterable<String> scopes) {
-        this(context,clientId, scopes, null);
-    }
+	private String decrypt(String password) {
+		if(password == null) return null;
+		return CredentialCryptor //
+				.getInstance(applicationContext) //
+				.decrypt(password);
+	}
 
     /** @return the client_id of the Live Connect application. */
     public String getClientId() {
@@ -398,7 +354,6 @@ public class LiveAuthClient {
                                                                 mOAuthConfig);
 
         request.addObserver(new ListenerCallerObserver(listener, userState));
-        request.addObserver(new RefreshTokenWriter());
         request.addObserver(new OAuthRequestObserver() {
             @Override
             public void onException(LiveAuthException exception) {
@@ -462,10 +417,6 @@ public class LiveAuthClient {
             activeScopes = scopes;
         }
 
-        if (TextUtils.isEmpty(this.session.getRefreshToken())) {
-            this.session.setRefreshToken(getRefreshTokenFromPreferences());
-        }
-
         // if the session is valid and contains all the scopes, do not display the login ui.
         final boolean needNewAccessToken = this.session.isExpired() || !this.session.contains(activeScopes);
         final boolean attemptingToLoginSilently = TextUtils.isEmpty(this.session.getRefreshToken());
@@ -481,8 +432,7 @@ public class LiveAuthClient {
                     listener.onAuthComplete(LiveStatus.CONNECTED, LiveAuthClient.this.session, userState);
                 } else {
                     Log.i(TAG, "All tokens expired, you need to call login() to initiate interactive logon");
-                    listener.onAuthComplete(LiveStatus.NOT_CONNECTED,
-                                               LiveAuthClient.this.getSession(), userState);
+                    listener.onAuthComplete(LiveStatus.NOT_CONNECTED, LiveAuthClient.this.getSession(), userState);
                 }
                 return null;
             }
@@ -526,8 +476,6 @@ public class LiveAuthClient {
         session.setRefreshToken(null);
         session.setScopes(null);
         session.setTokenType(null);
-
-        clearRefreshTokenFromPreferences();
 
         CookieSyncManager cookieSyncManager =
                 CookieSyncManager.createInstance(this.applicationContext);
@@ -581,7 +529,6 @@ public class LiveAuthClient {
 
         SessionRefresher refresher = new SessionRefresher(this.session);
         response.accept(refresher);
-        response.accept(new RefreshTokenWriter());
 
         return refresher.visitedSuccessfulResponse();
     }
@@ -596,40 +543,4 @@ public class LiveAuthClient {
         this.httpClient = client;
     }
 
-    /**
-     * Clears the refresh token from this {@code LiveAuthClient}'s
-     * {@link Activity#getPreferences(int)}.
-     *
-     * @return true if the refresh token was successfully cleared.
-     */
-    private boolean clearRefreshTokenFromPreferences() {
-        SharedPreferences settings = getSharedPreferences();
-        Editor editor = settings.edit();
-        editor.remove(PreferencesConstants.REFRESH_TOKEN_KEY);
-
-        return editor.commit();
-    }
-
-    private SharedPreferences getSharedPreferences() {
-        return applicationContext.getSharedPreferences(PreferencesConstants.FILE_NAME,
-                                                       Context.MODE_PRIVATE);
-    }
-
-    private List<String> getCookieKeysFromPreferences() {
-        SharedPreferences settings = getSharedPreferences();
-        String cookieKeys = settings.getString(PreferencesConstants.COOKIES_KEY, "");
-
-        return Arrays.asList(TextUtils.split(cookieKeys, PreferencesConstants.COOKIE_DELIMITER));
-    }
-
-    /**
-     * Retrieves the refresh token from this {@code LiveAuthClient}'s
-     * {@link Activity#getPreferences(int)}.
-     *
-     * @return the refresh token from persistent storage.
-     */
-    private String getRefreshTokenFromPreferences() {
-        SharedPreferences settings = getSharedPreferences();
-        return settings.getString(PreferencesConstants.REFRESH_TOKEN_KEY, null);
-    }
 }

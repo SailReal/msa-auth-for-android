@@ -29,7 +29,7 @@ if (JavaVersion.current().isJava8Compatible()) {
 }
 
 android {
-    compileSdkVersion 22
+    compileSdkVersion 29
     buildToolsVersion "22.0.1"
 
     // squelching errors from msa
@@ -41,7 +41,7 @@ android {
 
     defaultConfig {
         minSdkVersion 14
-        targetSdkVersion 22
+        targetSdkVersion 29
         versionCode 1
         versionName "1.0"
     }
@@ -54,7 +54,10 @@ android {
 }
 
 dependencies {
-    compile fileTree(dir: 'libs', include: ['*.jar'])
+    implementation project(path: ':util')
+	api fileTree(dir: 'libs', include: ['*.jar'])
+	api 'org.apache.httpcomponents:httpcore:4.4.13'
+	api 'org.apache.httpcomponents:httpclient:4.5.6'
 }
 
 
