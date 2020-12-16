@@ -56,8 +56,8 @@ android {
 dependencies {
     implementation project(path: ':util')
 	api fileTree(dir: 'libs', include: ['*.jar'])
-	api 'org.apache.httpcomponents:httpcore:4.4.13'
-	api 'org.apache.httpcomponents:httpclient:4.5.6'
+	api 'org.apache.httpcomponents:httpcore:4.4.14'
+	api 'org.apache.httpcomponents:httpclient:4.5.13'
 }
 
 
